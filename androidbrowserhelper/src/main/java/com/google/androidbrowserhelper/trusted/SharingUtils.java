@@ -1,4 +1,4 @@
-// Copyright 2019 Google Inc. All Rights Reserved.
+// Copyright 2020 Google Inc. All Rights Reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -30,11 +30,17 @@ import androidx.annotation.Nullable;
 import androidx.browser.trusted.sharing.ShareData;
 import androidx.browser.trusted.sharing.ShareTarget;
 
-/**
- * Utils for preparing the share data to be sent into a Trusted Web Activity.
- */
 public class SharingUtils {
     private SharingUtils() {}
+
+    /**
+     * Returns whether the given Intent is a share intent (and {@link #retrieveShareDataFromIntent}
+     * will return non-null).
+     */
+    public static boolean isShareIntent(Intent intent) {
+        String action = intent.getAction();
+        return Intent.ACTION_SEND.equals(action) || Intent.ACTION_SEND_MULTIPLE.equals(action);
+    }
 
     /**
      * Creates a {@link ShareData} object from an {@link Intent}. Returns null if the intent is not
@@ -43,16 +49,17 @@ public class SharingUtils {
      */
     @Nullable
     public static ShareData retrieveShareDataFromIntent(Intent intent) {
+        if (!isShareIntent(intent)) return null;
+
         String action = intent.getAction();
-        if (!Intent.ACTION_SEND.equals(action) && !Intent.ACTION_SEND_MULTIPLE.equals(action)) {
-            return null;
-        }
-        List<Uri> uris = intent.getParcelableArrayListExtra(Intent.EXTRA_STREAM);
-        if (uris == null) {
+        List<Uri> uris = null;
+        if (Intent.ACTION_SEND.equals(action)) {
             Uri uri = intent.getParcelableExtra(Intent.EXTRA_STREAM);
             if (uri != null) {
                 uris = Collections.singletonList(uri);
             }
+        } else {
+            uris = intent.getParcelableArrayListExtra(Intent.EXTRA_STREAM);
         }
         return new ShareData(intent.getStringExtra(Intent.EXTRA_SUBJECT),
                 intent.getStringExtra(Intent.EXTRA_TEXT), uris);

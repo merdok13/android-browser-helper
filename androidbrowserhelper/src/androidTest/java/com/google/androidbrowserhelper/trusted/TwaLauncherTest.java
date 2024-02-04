@@ -48,6 +48,7 @@ import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 
+import androidx.browser.customtabs.CustomTabsCallback;
 import androidx.browser.customtabs.CustomTabsIntent;
 import androidx.browser.customtabs.CustomTabsSessionToken;
 import androidx.browser.trusted.TrustedWebActivityIntentBuilder;
@@ -55,6 +56,10 @@ import androidx.test.InstrumentationRegistry;
 import androidx.test.filters.MediumTest;
 import androidx.test.rule.ActivityTestRule;
 import androidx.test.ext.junit.runners.AndroidJUnit4;
+
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 
 /**
  * Instrumentation tests for {@link TwaLauncher}
@@ -65,6 +70,7 @@ public class TwaLauncherTest {
     private static final Uri URL = Uri.parse("https://www.test.com/default_url/");
 
     private Context mContext = InstrumentationRegistry.getContext();
+    private static final CustomTabsCallback mCustomTabsCallback = new QualityEnforcer();
 
     @Rule
     public final EnableComponentsTestRule mEnableComponents = new EnableComponentsTestRule(
@@ -84,6 +90,9 @@ public class TwaLauncherTest {
     @Before
     public void setUp() {
         TwaProviderPicker.restrictToPackageForTesting(mContext.getPackageName());
+
+        // TODO(peconn): Maybe make this a test rule?
+        TestCustomTabsService.setCanCreateSessions(true);
         mActivity = mActivityTestRule.getActivity();
         mTwaLauncher = new TwaLauncher(mActivity);
     }
@@ -111,7 +120,8 @@ public class TwaLauncherTest {
         int expected = color | 0xff000000;
 
         TrustedWebActivityIntentBuilder builder = makeBuilder().setToolbarColor(color);
-        Runnable launchRunnable = () -> mTwaLauncher.launch(builder, null, null);
+        Runnable launchRunnable = () -> mTwaLauncher.launch(builder, mCustomTabsCallback,
+                null, null);
         Intent intent = getBrowserActivityWhenLaunched(launchRunnable).getIntent();
 
         assertEquals(expected, intent.getIntExtra(CustomTabsIntent.EXTRA_TOOLBAR_COLOR, 0));
@@ -130,6 +140,16 @@ public class TwaLauncherTest {
     }
 
     @Test
+    public void fallsBackToCustomTab_whenSessionCreationFails() {
+        TestCustomTabsService.setCanCreateSessions(false);
+
+        Runnable launchRunnable = () -> mTwaLauncher.launch(URL);
+        TestBrowser browser = getBrowserActivityWhenLaunched(launchRunnable);
+        assertFalse(browser.getIntent().getBooleanExtra(EXTRA_LAUNCH_AS_TRUSTED_WEB_ACTIVITY,
+                false));
+    }
+
+    @Test
     public void customTabFallbackUsesStatusBarColor() {
         mEnableComponents.manuallyDisable(TestCustomTabsServiceSupportsTwas.class);
         TwaLauncher launcher = new TwaLauncher(mActivity);
@@ -138,7 +158,8 @@ public class TwaLauncherTest {
         int expected = color | 0xff000000;
 
         TrustedWebActivityIntentBuilder builder = makeBuilder().setToolbarColor(color);
-        Runnable launchRunnable = () -> launcher.launch(builder, null, null);
+        Runnable launchRunnable = () -> launcher.launch(builder, mCustomTabsCallback,
+                null, null);
         Intent intent = getBrowserActivityWhenLaunched(launchRunnable).getIntent();
 
         launcher.destroy();
@@ -166,13 +187,15 @@ public class TwaLauncherTest {
         int sessionId1 = 1;
         int sessionId2 = 2;
 
-        TwaLauncher launcher1 = new TwaLauncher(mActivity, null, sessionId1);
+        TwaLauncher launcher1 = new TwaLauncher(mActivity, null, sessionId1,
+                new SharedPreferencesTokenStore(mActivity));
         CustomTabsSessionToken token1 =
                 getSessionTokenFromLaunchedBrowser(() -> launcher1.launch(URL));
         launcher1.destroy();
 
         // New activity is created (e.g. by an external VIEW intent).
-        TwaLauncher launcher2 = new TwaLauncher(mActivity, null, sessionId2);
+        TwaLauncher launcher2 = new TwaLauncher(mActivity, null, sessionId2,
+                new SharedPreferencesTokenStore(mActivity));
         CustomTabsSessionToken token2 =
                 getSessionTokenFromLaunchedBrowser(() -> launcher2.launch(URL));
         launcher2.destroy();
@@ -183,7 +206,8 @@ public class TwaLauncherTest {
     @Test
     public void completionCallbackCalled() {
         Runnable callback = mock(Runnable.class);
-        Runnable launchRunnable = () -> mTwaLauncher.launch(makeBuilder(), null, callback);
+        Runnable launchRunnable = () -> mTwaLauncher.launch(makeBuilder(), mCustomTabsCallback,
+                null, callback);
         getBrowserActivityWhenLaunched(launchRunnable);
         verify(callback).run();
     }
@@ -194,7 +218,8 @@ public class TwaLauncherTest {
         TwaLauncher twaLauncher = new TwaLauncher(mActivity);
 
         Runnable callback = mock(Runnable.class);
-        Runnable launchRunnable = () -> twaLauncher.launch(makeBuilder(), null, callback);
+        Runnable launchRunnable = () -> twaLauncher.launch(makeBuilder(), mCustomTabsCallback,
+                null, callback);
         getBrowserActivityWhenLaunched(launchRunnable);
         verify(callback).run();
         twaLauncher.destroy();
@@ -204,7 +229,7 @@ public class TwaLauncherTest {
     public void notifiesSplashScreenStrategyOfLaunchInitiation() {
         SplashScreenStrategy strategy = mock(SplashScreenStrategy.class);
         TrustedWebActivityIntentBuilder builder = makeBuilder();
-        mTwaLauncher.launch(builder, strategy, null);
+        mTwaLauncher.launch(builder, mCustomTabsCallback, strategy, null);
         verify(strategy).onTwaLaunchInitiated(
                 eq(InstrumentationRegistry.getContext().getPackageName()),
                 eq(builder));
@@ -217,7 +242,7 @@ public class TwaLauncherTest {
         // Using spy to verify intent is never built to avoid testing directly that activity is
         // not launched.
         TrustedWebActivityIntentBuilder builder = spy(makeBuilder());
-        mTwaLauncher.launch(builder, strategy, null);
+        mTwaLauncher.launch(builder, mCustomTabsCallback, strategy, null);
         verify(builder, never()).build(any());
     }
 
@@ -229,8 +254,26 @@ public class TwaLauncherTest {
             return null;
         }).when(strategy).configureTwaBuilder(any(), any(), any());
 
-        Runnable launchRunnable = () -> mTwaLauncher.launch(makeBuilder(), strategy, null);
+        Runnable launchRunnable = () -> mTwaLauncher.launch(makeBuilder(), mCustomTabsCallback,
+                strategy, null);
         assertNotNull(getBrowserActivityWhenLaunched(launchRunnable));
+    }
+
+    @Test
+    public void cancelsLaunch_IfSplashScreenStrategyFinishes_AfterDestroy() throws Exception {
+        CountDownLatch latch = new CountDownLatch(1);
+        SplashScreenStrategy strategy = mock(SplashScreenStrategy.class);
+        doAnswer(invocation -> {
+            mTwaLauncher.destroy();
+            ((Runnable) invocation.getArgument(2)).run();
+            latch.countDown();
+            return null;
+        }).when(strategy).configureTwaBuilder(any(), any(), any());
+
+        TrustedWebActivityIntentBuilder builder = spy(makeBuilder());
+        mTwaLauncher.launch(builder, mCustomTabsCallback, strategy, null);
+        assertTrue(latch.await(3, TimeUnit.SECONDS));
+        verify(builder, never()).build(any());
     }
 
     private TrustedWebActivityIntentBuilder makeBuilder() {

@@ -14,12 +14,14 @@
 package com.google.androidbrowserhelper.trusted;
 
 import android.content.pm.PackageManager;
+import android.os.Build;
 
 import java.util.Arrays;
 import java.util.List;
 
 import androidx.browser.customtabs.CustomTabsClient;
 import androidx.browser.customtabs.CustomTabsService;
+import androidx.browser.customtabs.CustomTabsSession;
 
 /**
  * The behaviour of the Trusted Web Activity Launcher changes based on what features are supported
@@ -70,8 +72,8 @@ public class ChromeLegacyUtils {
 
     static final int VERSION_SUPPORTS_TRUSTED_WEB_ACTIVITIES = 362600000;
     private static final int VERSION_SUPPORTS_NO_PREWARM = 368300000;
-    private static final int VERSION_76 = 380900000;
-    private static final int VERSION_77 = 386500000;
+    private static final int VERSION_SUPPORTS_CUSTOM_COLOR = 380900000;
+    private static final int VERSION_SUPPORTS_SIMPLIFIED_MANAGE_DATA = 389000000;
 
     private ChromeLegacyUtils() {}
 
@@ -85,13 +87,14 @@ public class ChromeLegacyUtils {
     }
 
     /**
-     * Chrome 76 supports navbar and color customization but doesn't advertise it.
+     * Whether the browser supports navbar and color customization but doesn't advertise it.
      */
-    public static boolean isChrome76(PackageManager pm, String packageName) {
+    public static boolean supportsNavbarAndColorCustomization(PackageManager pm,
+            String packageName) {
         // Assume other browsers that support this feature will advertise it.
         if (!SUPPORTED_CHROME_PACKAGES.contains(packageName)) return false;
 
-        return checkChromeVersion(pm, packageName, VERSION_76, VERSION_77);
+        return checkChromeVersion(pm, packageName, VERSION_SUPPORTS_CUSTOM_COLOR);
     }
 
     /**
@@ -102,6 +105,14 @@ public class ChromeLegacyUtils {
         if (!SUPPORTED_CHROME_PACKAGES.contains(packageName)) return false;
 
         return checkChromeVersion(pm, packageName, VERSION_SUPPORTS_TRUSTED_WEB_ACTIVITIES);
+    }
+
+    /**
+     * Whether the browser supports site settings. Note that in legacy Chrome this coincides
+     * with supporting Trusted Web Activities.
+     */
+    public static boolean supportsSiteSettings(PackageManager packageManager, String packageName) {
+        return supportsTrustedWebActivities(packageManager, packageName);
     }
 
     /**
@@ -117,6 +128,19 @@ public class ChromeLegacyUtils {
     }
 
     /**
+     * Returns false if {@link CustomTabsClient#warmup} and
+     * {@link CustomTabsSession#validateRelationship} need to be called prior to starting a manage
+     * data activity.
+     */
+    public static boolean supportsManageSpaceWithoutWarmupAndValidation(PackageManager pm,
+            String packageName) {
+        // Assume other browsers never had this requirement.
+        if (!SUPPORTED_CHROME_PACKAGES.contains(packageName)) return false;
+
+        return checkChromeVersion(pm, packageName, VERSION_SUPPORTS_SIMPLIFIED_MANAGE_DATA);
+    }
+
+    /**
      * Returns true if the given {@code packageName} points to a version of Chrome greater than or
      * equal to {code version}.
      */
@@ -128,21 +152,14 @@ public class ChromeLegacyUtils {
         return getVersionCode(pm, packageName) >= version;
     }
 
-    /**
-     * Returns true if the given {@code packageName} points to a version of Chrome between
-     * minVersion and maxVersion.
-     */
-    private static boolean checkChromeVersion(PackageManager pm, String packageName,
-            int minVersion, int maxVersion) {
-        // Assume that these two-sided checks are only for past versions, so local build is newer.
-        if (LOCAL_BUILD_PACKAGES.contains(packageName)) return false;
-
-        int versionCode = getVersionCode(pm, packageName);
-        return versionCode >= minVersion && versionCode < maxVersion;
-    }
-
+    @SuppressWarnings("deprecation")
     static int getVersionCode(PackageManager pm, String packageName) {
         try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                // getLongVersionCode contains versionCode in the lower 32bits and versionCodeMajor
+                // in the higher 32 bits. Casting to int will give us the lower 32 bits.
+                return (int) pm.getPackageInfo(packageName, 0).getLongVersionCode();
+            }
             return pm.getPackageInfo(packageName, 0).versionCode;
         } catch (PackageManager.NameNotFoundException e) {
             return 0;
